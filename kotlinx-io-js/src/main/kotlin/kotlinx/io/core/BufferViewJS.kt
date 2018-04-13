@@ -22,6 +22,10 @@ actual class BufferView internal constructor(
     actual var attachment: Any? = null
     actual var next: BufferView? = null
 
+    /**
+     * Backing buffer capacity. Value for released buffer is unspecified
+     */
+    actual val capacity: Int get() = content.byteLength
     actual val readRemaining get() = writePosition - readPosition
     actual val writeRemaining get() = limit - writePosition
 
@@ -53,61 +57,72 @@ actual class BufferView internal constructor(
         }
 
     actual fun readByte(): Byte {
+        if (readRemaining < 0) throw IllegalStateException("No bytes available for read")
         val value = i8[readPosition]
         readPosition++
         return value
     }
 
     actual fun writeByte(v: Byte) {
+        if (writeRemaining < 1) throw IllegalStateException("No space left for writing")
         i8[writePosition] = v
         writePosition++
     }
 
     actual fun readShort(): Short {
+        if (readRemaining < 2) throw IllegalStateException("Not enough bytes available to read a short")
         val value = view.getInt16(readPosition, littleEndian)
         readPosition += 2
         return value
     }
 
     actual fun writeShort(v: Short) {
+        if (writeRemaining < 2) throw IllegalStateException("Not enough space left to write a short")
         view.setInt16(writePosition, v, littleEndian)
         writePosition += 2
     }
 
     actual fun readInt(): Int {
+        if (readRemaining < 4) throw IllegalStateException("Not enough bytes available to read an int")
         val value = view.getInt32(readPosition, littleEndian)
         readPosition += 4
         return value
     }
 
     actual fun writeInt(v: Int) {
+        if (writeRemaining < 4) throw IllegalStateException("Not enough space left to write an int")
         view.setInt32(writePosition, v, littleEndian)
         writePosition += 4
     }
 
     actual fun readFloat(): Float {
+        if (readRemaining < 4) throw IllegalStateException("Not enough bytes available to read a float")
         val value = view.getFloat32(readPosition, littleEndian)
         readPosition += 4
         return value
     }
 
     actual fun writeFloat(v: Float) {
+        if (writeRemaining < 4) throw IllegalStateException("Not enough space left to write a float")
         view.setFloat32(writePosition, v, littleEndian)
         writePosition += 4
     }
 
     actual fun readDouble(): Double {
+        if (readRemaining < 8) throw IllegalStateException("Not enough bytes available to read a double")
         val value = view.getFloat64(readPosition, littleEndian)
         readPosition += 8
         return value
     }
 
     actual fun writeDouble(v: Double) {
+        if (writeRemaining < 8) throw IllegalStateException("Not enough space left to write a double")
         view.setFloat64(writePosition, v, littleEndian)
         writePosition += 8
     }
 
     actual fun read(dst: ByteArray, offset: Int, length: Int) {
+        if (readRemaining < length) throw IllegalStateException("Not enough bytes available ($readRemaining) to read $length bytes")
         val rp = readPosition
         val i8 = i8
 
@@ -119,6 +134,7 @@ actual class BufferView internal constructor(
     }
 
     fun read(dst: Array<Byte>, offset: Int, length: Int) {
+        if (readRemaining < length) throw IllegalStateException("Not enough bytes available ($readRemaining) to read $length bytes")
         val rp = readPosition
         val i8 = i8
 
@@ -130,6 +146,7 @@ actual class BufferView internal constructor(
     }
 
     fun read(dst: ArrayBuffer, offset: Int, length: Int) {
+        if (readRemaining < length) throw IllegalStateException("Not enough bytes available ($readRemaining) to read $length bytes")
         val to = Int8Array(dst, offset, length)
 
         val rp = readPosition
@@ -151,6 +168,7 @@ actual class BufferView internal constructor(
     }
 
     fun read(dst: Int8Array, offset: Int, length: Int) {
+        if (readRemaining < length) throw IllegalStateException("Not enough bytes available ($readRemaining) to read $length bytes")
         val rp = readPosition
         val rem = writePosition - rp
         val i8 = i8
@@ -170,6 +188,7 @@ actual class BufferView internal constructor(
     }
 
     actual fun write(array: ByteArray, offset: Int, length: Int) {
+        if (writeRemaining < length) throw IllegalStateException("Not enough space left ($writeRemaining) to write $length bytes")
         val wp = writePosition
         val i8 = i8
 
@@ -181,6 +200,7 @@ actual class BufferView internal constructor(
     }
 
     fun write(src: Int8Array, offset: Int, length: Int) {
+        if (writeRemaining < length) throw IllegalStateException("Not enough space left ($writeRemaining) to write $length bytes")
         val wp = writePosition
         val rem = limit - wp
         val i8 = i8
@@ -201,6 +221,7 @@ actual class BufferView internal constructor(
     }
 
     actual fun readLong(): Long {
+        if (readRemaining < 8) throw IllegalStateException("Not enough bytes available to read a long")
         val m = 0xffffffff
         val a = readInt().toLong() and m
         val b = readInt().toLong() and m
@@ -213,6 +234,7 @@ actual class BufferView internal constructor(
     }
 
     actual fun writeLong(v: Long) {
+        if (writeRemaining < 8) throw IllegalStateException("Not enough space left to write a long")
         val m = 0xffffffff
         val a = (v shr 32).toInt()
         val b = (v and m).toInt()
@@ -238,9 +260,14 @@ actual class BufferView internal constructor(
     }
 
     actual fun resetForWrite() {
+        resetForWrite(content.byteLength)
+    }
+
+    actual fun resetForWrite(limit: Int) {
+        require(limit <= content.byteLength) { "Limit shouldn't be bigger than buffer size: limit = $limit, size = ${content.byteLength}"}
         readPosition = 0
         writePosition = 0
-        limit = content.byteLength
+        this.limit = limit
     }
 
     actual fun resetForRead() {
