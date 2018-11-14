@@ -9,13 +9,14 @@ import kotlin.test.*
 
 class BytePacketReaderWriterTest {
     @get:Rule
-    internal val pool = VerifyingObjectPool(BufferView.Pool)
+    internal val pool = VerifyingObjectPool(IoBuffer.Pool)
 
     @Test
     fun testReaderEmpty() {
         val packet = buildPacket {
         }
 
+        assertNotNull(packet)
         assertEquals(-1, packet.readerUTF8().read())
     }
 
@@ -262,6 +263,7 @@ class BytePacketReaderWriterTest {
     fun testWritePacketSingle() {
         val inner = buildPacket {
             append("ABC")
+            assertEquals(3, size)
         }
 
         val outer = buildPacket {
@@ -272,7 +274,7 @@ class BytePacketReaderWriterTest {
             append(".")
         }
 
-        assertEquals("123ABC.", outer.readText().toString())
+        assertEquals("123ABC.", outer.readText())
         assertEquals(0, inner.remaining)
     }
 
@@ -290,7 +292,7 @@ class BytePacketReaderWriterTest {
             append(".")
         }
 
-        assertEquals("123" + "o".repeat(100000) + ".", outer.readText().toString())
+        assertEquals("123" + "o".repeat(100000) + ".", outer.readText())
         assertEquals(0, inner.remaining)
     }
 
@@ -307,7 +309,7 @@ class BytePacketReaderWriterTest {
             assertEquals(5, size)
         }
 
-        assertEquals("1234.", outer.readText().toString())
+        assertEquals("1234.", outer.readText())
         assertEquals(0, inner.remaining)
     }
 
@@ -324,7 +326,7 @@ class BytePacketReaderWriterTest {
             kotlin.test.assertEquals(5, size)
         }
 
-        assertEquals("1234.", outer.readText().toString())
+        assertEquals("1234.", outer.readText())
         assertEquals(0, inner.remaining)
     }
 
@@ -341,7 +343,7 @@ class BytePacketReaderWriterTest {
             kotlin.test.assertEquals(5, size)
         }
 
-        assertEquals("1234.", outer.readText().toString())
+        assertEquals("1234.", outer.readText())
         assertEquals(0, inner.remaining)
     }
 
@@ -359,7 +361,7 @@ class BytePacketReaderWriterTest {
             append(".")
         }
 
-        assertEquals("123ABC.", outer.readText().toString())
+        assertEquals("123ABC.", outer.readText())
         assertEquals(3, inner.remaining)
         inner.release()
     }
@@ -378,7 +380,7 @@ class BytePacketReaderWriterTest {
             append(".")
         }
 
-        assertEquals("123" + "o".repeat(100000) + ".", outer.readText().toString())
+        assertEquals("123" + "o".repeat(100000) + ".", outer.readText())
         assertEquals(100000, inner.remaining)
         inner.release()
     }
@@ -392,85 +394,6 @@ class BytePacketReaderWriterTest {
         }
 
         assertEquals(0x1234567812345678L, packet.readLong())
-    }
-
-    @Test
-    fun testReadText() {
-        val packet = buildPacket {
-            writeByte(0xc6.toByte())
-            writeByte(0x86.toByte())
-        }
-
-        assertEquals("\u0186", packet.readText(decoder = Charsets.UTF_8.newDecoder()))
-        assertEquals(0, packet.remaining)
-    }
-
-    @Test
-    fun testReadTextLimited() {
-        val packet = buildPacket {
-            writeByte(0xc6.toByte())
-            writeByte(0x86.toByte())
-            writeByte(0xc6.toByte())
-            writeByte(0x86.toByte())
-        }
-
-        assertEquals("\u0186", packet.readText(decoder = Charsets.UTF_8.newDecoder(), max = 1))
-        assertEquals(2, packet.remaining)
-        packet.release()
-    }
-
-    @Test
-    fun testReadTextChain() {
-        val segment1 = pool.borrow()
-        val segment2 = pool.borrow()
-        segment1.next = segment2
-        segment1.reserveEndGap(8)
-
-        segment1.writeByte(0xc6.toByte())
-        segment2.writeByte(0x86.toByte())
-
-        val packet = ByteReadPacket(segment1, pool)
-
-        assertEquals("\u0186", packet.readText())
-        assertTrue { packet.isEmpty }
-    }
-
-    @Test
-    fun testReadTextChainThroughReservation() {
-        val segment1 = pool.borrow()
-        val segment2 = pool.borrow()
-        segment1.next = segment2
-        segment1.reserveEndGap(8)
-
-        while (segment1.writeRemaining > 1) {
-            segment1.writeByte(0)
-        }
-        segment1.writeByte(0xc6.toByte())
-        while (segment1.readRemaining > 1) {
-            segment1.readByte()
-        }
-        segment2.writeByte(0x86.toByte())
-
-        val packet = ByteReadPacket(segment1, pool)
-
-        assertEquals("\u0186", packet.readText())
-        assertTrue { packet.isEmpty }
-    }
-
-    @Test
-    fun testReadTextChainWithDecoder() {
-        val segment1 = pool.borrow()
-        val segment2 = pool.borrow()
-        segment1.next = segment2
-        segment1.reserveEndGap(8)
-
-        segment1.writeByte(0xc6.toByte())
-        segment2.writeByte(0x86.toByte())
-
-        val packet = ByteReadPacket(segment1, pool)
-
-        assertEquals("\u0186", packet.readText(decoder = Charsets.UTF_8.newDecoder()))
-        assertTrue { packet.isEmpty }
     }
 
     private inline fun buildPacket(startGap: Int = 0, block: BytePacketBuilder.() -> Unit): ByteReadPacket {

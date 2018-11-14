@@ -30,7 +30,7 @@ fun WritableByteChannel.writePacket(p: ByteReadPacket): Boolean {
             var rc = 0
 
             @Suppress("INVISIBLE_MEMBER")
-            p.readDirect { node : BufferView ->
+            p.read { node : IoBuffer ->
                 node.readDirect {
                     rc = write(it)
                 }
@@ -63,15 +63,15 @@ fun ReadableByteChannel.readPacketAtLeast(n: Long): ByteReadPacket = readPacketI
 fun ReadableByteChannel.readPacketAtMost(n: Long): ByteReadPacket = readPacketImpl(1L, n)
 
 private fun ReadableByteChannel.readPacketImpl(min: Long, max: Long): ByteReadPacket {
-    require(min >= 0L)
-    require(min <= max)
+    require(min >= 0L) { "min shouldn't be negative: $min" }
+    require(min <= max) { "min shouldn't be greater than max: $min > $max" }
 
     if (max == 0L) return ByteReadPacket.Empty
 
-    val pool = BufferView.Pool
-    val empty = BufferView.Empty
-    var head: BufferView = empty
-    var tail: BufferView = empty
+    val pool = IoBuffer.Pool
+    val empty = IoBuffer.Empty
+    var head: IoBuffer = empty
+    var tail: IoBuffer = empty
 
     var read = 0L
 
@@ -111,3 +111,19 @@ private fun ReadableByteChannel.readPacketImpl(min: Long, max: Long): ByteReadPa
     return ByteReadPacket(head, pool)
 }
 
+/**
+ * Does the same as [ReadableByteChannel.read] but to a [IoBuffer] instance
+ */
+fun ReadableByteChannel.read(buffer: IoBuffer): Int {
+    if (buffer.writeRemaining == 0) return 0
+    val rc = read(buffer.writeBuffer)
+    buffer.afterWrite()
+    return rc
+}
+
+/**
+ * Does the same as [WritableByteChannel.write] but from a [IoBuffer] instance
+ */
+fun WritableByteChannel.write(buffer: IoBuffer): Int {
+    return write(buffer.readBuffer)
+}

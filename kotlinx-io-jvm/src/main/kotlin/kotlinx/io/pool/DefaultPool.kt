@@ -2,9 +2,10 @@ package kotlinx.io.pool
 
 import kotlinx.io.utils.*
 import java.util.concurrent.atomic.*
+import kotlin.jvm.*
 
 private const val MULTIPLIER = 4
-private const val PROBE_COUNT = 8 // number of attepts to find a slot
+private const val PROBE_COUNT = 8 // number of attempts to find a slot
 private const val MAGIC = 2654435769.toInt() // fractional part of golden ratio
 private const val MAX_CAPACITY = Int.MAX_VALUE / MULTIPLIER
 
@@ -30,15 +31,15 @@ actual abstract class DefaultPool<T : Any>(actual final override val capacity: I
     private val instances = AtomicReferenceArray<T?>(maxIndex + 1)
     private val next = IntArray(maxIndex + 1)
 
-    override fun borrow(): T =
+    final override fun borrow(): T =
             tryPop()?.let { clearInstance(it) } ?: produceInstance()
 
-    override fun recycle(instance: T) {
+    final override fun recycle(instance: T) {
         validateInstance(instance)
         if (!tryPush(instance)) disposeInstance(instance)
     }
 
-    override fun dispose() {
+    final override fun dispose() {
         while (true) {
             val instance = tryPop() ?: return
             disposeInstance(instance)
@@ -63,7 +64,7 @@ actual abstract class DefaultPool<T : Any>(actual final override val capacity: I
     }
 
     private fun pushTop(index: Int) {
-        require(index > 0)
+        require(index > 0) { "index should be positive" }
         while (true) { // lock-free loop on top
             val top = this.top // volatile read
             val topVersion = (top shr 32 and 0xffffffffL) + 1L

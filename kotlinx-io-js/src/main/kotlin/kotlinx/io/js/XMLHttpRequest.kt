@@ -11,8 +11,9 @@ fun XMLHttpRequest.sendPacket(packet: ByteReadPacket) {
     send(packet.readArrayBuffer())
 }
 
+@Suppress("UnsafeCastFromDynamic")
 fun XMLHttpRequest.responsePacket(): ByteReadPacket = when (responseType) {
-    XMLHttpRequestResponseType.ARRAYBUFFER -> ByteReadPacket(BufferView(response.asDynamic(), null), BufferView.NoPool)
+    XMLHttpRequestResponseType.ARRAYBUFFER -> ByteReadPacket(IoBuffer(response.asDynamic(), null), IoBuffer.NoPool)
     XMLHttpRequestResponseType.EMPTY -> ByteReadPacket.Empty
     else -> throw IllegalStateException("Incompatible type ${responseType}: only ARRAYBUFFER and EMPTY are supported")
 }

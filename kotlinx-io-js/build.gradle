@@ -1,4 +1,3 @@
-apply plugin: 'kotlin-platform-js'
 apply plugin: 'org.jetbrains.kotlin.frontend'
 
 dependencies {
@@ -13,6 +12,8 @@ kotlinFrontend {
 
     npm {
         dependency "text-encoding"
+        devDependency "karma-qunit", "1.2.1"
+        devDependency "karma", "2.0.5"
     }
 
     webpackBundle {
@@ -21,6 +22,7 @@ kotlinFrontend {
 
     karma {
         enableWebPack = true
+        extraConfig = [ browserNoActivityTimeout: 30000 ]
     }
 }
 
@@ -28,7 +30,7 @@ compileKotlin2Js {
     kotlinOptions.metaInfo = true
 //    kotlinOptions.outputFile = "$project.buildDir.path/js/${project.name}.js"
     kotlinOptions.sourceMap = true
-    kotlinOptions.moduleKind = 'commonjs'
+    kotlinOptions.moduleKind = 'umd'
     kotlinOptions.main = "noCall"
 }
 
@@ -36,6 +38,6 @@ compileTestKotlin2Js {
     kotlinOptions.metaInfo = true
 //    kotlinOptions.outputFile = "$project.buildDir.path/js-tests/${project.name}-tests.js"
     kotlinOptions.sourceMap = true
-    kotlinOptions.moduleKind = 'commonjs'
+    kotlinOptions.moduleKind = 'umd'
     kotlinOptions.main = "call"
 }

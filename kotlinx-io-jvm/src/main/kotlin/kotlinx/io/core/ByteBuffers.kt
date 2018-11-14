@@ -21,19 +21,21 @@ fun ByteReadPacket.readFully(dst: ByteBuffer): Int {
 private tailrec fun ByteReadPacket.readAsMuchAsPossible(bb: ByteBuffer, copied: Int): Int {
     if (!bb.hasRemaining()) return copied
     @Suppress("INVISIBLE_MEMBER")
-    val current: BufferView = prepareRead(1) ?: return copied
+    val current: IoBuffer = prepareRead(1) ?: return copied
 
     val destinationCapacity = bb.remaining()
     val available = current.readRemaining
 
     return if (destinationCapacity >= available) {
-        current.read(bb, available)
+        current.readFully(bb, available)
         @Suppress("INVISIBLE_MEMBER")
         releaseHead(current)
 
         readAsMuchAsPossible(bb, copied + available)
     } else {
-        current.read(bb, destinationCapacity)
+        current.readFully(bb, destinationCapacity)
+        @Suppress("DEPRECATION_ERROR")
+        `$updateRemaining$`(current.readRemaining)
         copied + destinationCapacity
     }
 }
@@ -50,33 +52,25 @@ private tailrec fun ByteReadPacket.readAsMuchAsPossible(bb: ByteBuffer, copied: 
  * and not guaranteed that is will be big enough to keep [size] bytes. However it is guaranteed that the segment size
  * is at least 8 bytes long (long integer bytes length)
  */
-fun BytePacketBuilder.writeDirect(size: Int, block: (ByteBuffer) -> Unit) {
-    @Suppress("INVISIBLE_MEMBER")
-    write(size) { buffer: BufferView ->
+inline fun BytePacketBuilder.writeDirect(size: Int, block: (ByteBuffer) -> Unit) {
+    write(size) { buffer: IoBuffer ->
         buffer.writeDirect(size, block)
+    }
+}
+
+inline fun ByteReadPacketBase.readDirect(size: Int, block: (ByteBuffer) -> Unit) {
+    read(size) { view ->
+        view.readDirect {
+            block(it)
+        }
     }
 }
 
 /**
  * Write all [src] buffer remaining bytes and change it's position accordingly
  */
+@Suppress("EXTENSION_SHADOWED_BY_MEMBER")
+@Deprecated("Should be resolved to member function instead", level = DeprecationLevel.HIDDEN)
 fun BytePacketBuilder.writeFully(src: ByteBuffer) {
-    while (src.hasRemaining()) {
-        @Suppress("INVISIBLE_MEMBER")
-        write(1) { buffer: BufferView ->
-            val srcSize = src.remaining()
-            val capacity = buffer.writeRemaining
-
-            if (capacity >= srcSize) {
-                buffer.write(src)
-                srcSize
-            } else {
-                val lim = src.limit()
-                src.limit(src.position() + capacity)
-                buffer.write(src)
-                src.limit(lim)
-                capacity
-            }
-        }
-    }
+    writeFully(src)
 }

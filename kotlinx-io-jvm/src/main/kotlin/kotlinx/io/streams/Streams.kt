@@ -16,11 +16,11 @@ fun OutputStream.writePacket(builder: BytePacketBuilder.() -> Unit) {
  */
 fun OutputStream.writePacket(packet: ByteReadPacket) {
     val s = packet.remaining
-    if (s == 0) return
-    val buffer = ByteArray(s.coerceAtMost(4096))
+    if (s == 0L) return
+    val buffer = ByteArray(s.coerceAtMost(4096L).toInt())
 
     try {
-        while (!packet.isEmpty) {
+        while (packet.isNotEmpty) {
             val size = packet.readAvailable(buffer)
             write(buffer, 0, size)
         }
@@ -46,8 +46,8 @@ fun InputStream.readPacketAtLeast(n: Long): ByteReadPacket = readPacketImpl(n, L
 fun InputStream.readPacketAtMost(n: Long): ByteReadPacket = readPacketImpl(1L, n)
 
 private fun InputStream.readPacketImpl(min: Long, max: Long): ByteReadPacket {
-    require(min >= 0L)
-    require(min <= max)
+    require(min >= 0L) { "min shouldn't be negative" }
+    require(min <= max) { "min shouldn't be greater than max: $min > $max" }
 
     val buffer = ByteArray(max.coerceAtMost(4096).toInt())
     val builder = BytePacketBuilder()
@@ -82,7 +82,7 @@ fun ByteReadPacket.inputStream(): InputStream {
             return readByte().toInt() and 0xff
         }
 
-        override fun available() = remaining
+        override fun available() = remaining.coerceAtMostMaxInt()
 
         override fun close() {
             release()
@@ -144,8 +144,7 @@ fun BytePacketBuilder.outputStream(): OutputStream {
 fun BytePacketBuilder.writerUTF8(): Writer {
     return object : Writer() {
         override fun write(cbuf: CharArray, off: Int, len: Int) {
-            @Suppress("INVISIBLE_MEMBER")
-            appendChars(cbuf, off, off + len)
+            append(cbuf, off, off + len)
         }
 
         override fun flush() {

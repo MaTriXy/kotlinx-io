@@ -1,14 +1,14 @@
 [![Official JetBrains project](http://jb.gg/badges/official.svg)](https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub)
-[![Download](https://api.bintray.com/packages/kotlin/kotlinx/kotlinx-io/images/download.svg) ](https://bintray.com/kotlin/kotlinx/kotlinx-io/_latestVersion)
-[![TeamCity Build](https://img.shields.io/teamcity/http/teamcity.jetbrains.com/s/KotlinTools_KotlinxIo_Build.svg)](https://teamcity.jetbrains.com/viewType.html?buildTypeId=KotlinTools_KotlinxIo_Build&branch_KotlinTools_KotlinxIo=%3Cdefault%3E&tab=buildTypeStatusDiv)
+[![Download](https://api.bintray.com/packages/kotlin/kotlinx/kotlinx.io/images/download.svg) ](https://bintray.com/kotlin/kotlinx/kotlinx.io/_latestVersion)
+[![TeamCity Build](https://img.shields.io/teamcity/http/teamcity.jetbrains.com/s/KotlinTools_KotlinxIo_BuildLinux.svg)](https://teamcity.jetbrains.com/viewType.html?buildTypeId=KotlinTools_KotlinxIo_BuildLinux&branch_KotlinTools_KotlinxIo=%3Cdefault%3E&tab=buildTypeStatusDiv)
 [![GitHub License](https://img.shields.io/badge/license-Apache%20License%202.0-blue.svg?style=flat)](http://www.apache.org/licenses/LICENSE-2.0)
 
 kotlinx-io is a multiplatform library suitable for I/O primitives building and manipulations
 
-![Experimental](https://img.shields.io/badge/kotlinx-experimental-orange.svg?style=flat) 
+![Experimental](https://img.shields.io/badge/kotlinx-experimental-orange.svg?style=flat)
 
 Please note that this library is experimental. Any API is a subject to change.
- 
+
 Best with [kotlinx.coroutines-io](https://github.com/Kotlin/kotlinx.coroutines)
 
 # Setup
@@ -27,18 +27,18 @@ Use `kotlinx-io-js` with Kotlin JavaScript and `kotlin-io` for common code if yo
 
 # Basic concepts
 
-## BufferView
+## IoBuffer
 
-A buffer view is a view to byte buffer (in JVM it could be direct `ByteBuffer`, on JS it could be `ArrayBuffer`). Comparing to java's NIO `ByteBuffer`, `BufferView` ...
+A buffer view is a view to byte buffer (in JVM it could be direct `ByteBuffer`, on JS it could be `ArrayBuffer`). Comparing to java's NIO `ByteBuffer`, `IoBuffer` ...
 
 - should be released via `release()` invocation
-- could be copied via `copy()` that actually doesn't copy any bytes but makes a new view
-  - copy should be released as well
+- could be copied via `makeView()` that actually doesn't copy any bytes but makes a new view
+  - a copy should be released as well
 - could be used to read and write, no need to do `flip`
 - has a `next` property so it is suitable to make chains of buffer views with no need to allocate any lists or extra arrays
 - designed to work with buffer view pool
 
-Note that `BufferView` is not concurrent safe however it is safe to do `copy()` and `release()` concurrently (when this makes sense).
+Note that `IoBuffer` is not concurrent safe however it is safe to do `copy()` and `release()` concurrently (when this makes sense).
 
 
 ## ByteReadPacket
@@ -48,7 +48,7 @@ Note that `BufferView` is not concurrent safe however it is safe to do `copy()` 
 - byte packet is read only
 - there is no way to reset/pushback already readen bytes
 - every buffer view will be released once it becomes empty
-- does support `copy()`, similar to `BufferView.copy()` it doesn't copy bytes
+- does support `copy()`, similar to `IoBuffer.copy()` it doesn't copy bytes
 - not reusable - once all bytes were read there is no way to reset it to read bytes again - make a copy instead
 - supports start gap hint (see byte packet builder)
 - provides `java.io.Reader` (reads characters as UTF-8) and `java.io.InputStream` compatibility
@@ -74,7 +74,7 @@ A packet builder that consists of a sequence of buffer views. It borrows buffer 
 - write-only
 - has explicit `release()` function to discard all bytes
 - `build()` makes an instance of `ByteReadPacket` and resets builder's state to the initial one so builder becomes empty and ready to build another one packet
-- supports optimized write byte packet operation: could merge miltiple buffers into one if possible (only if bytes quantity is not too large), considers start gap hint as well
+- supports optimized write byte packet operation: could merge multiple buffers into one if possible (only if bytes quantity is not too large), considers start gap hint as well
 - provides `java.io.OutputStream` and `java.lang.Appendable` (appends characters as UTF-8)
 - as was noted before it is reusable: another byte packet could be built once `build()` has been invoked to build a previous one or `reset()` to discard all previously written bytes
 
@@ -107,7 +107,7 @@ suspend fun loop(destination: SendChannel<ByteReadPacket>) {
 
 ## ObjectPool
 
-`ObjectPool` is a general purpose lock-free concurrent-safe object pool. It is leak-safe: all object that hasn't been recycled but collected by GC do not cause any issues with a pool but only allocation penalty. Note that it doens't mean that leaking object will not cause any issues at all as lost objects could hold some native or external resources. The only guarantee is that `ObjectPool` is not going to break if there are lost objects.
+`ObjectPool` is a general purpose lock-free concurrent-safe object pool. It is leak-safe: all object that hasn't been recycled but collected by GC do not cause any issues with a pool but only allocation penalty. Note that it doesn't mean that leaking object will not cause any issues at all as lost objects could hold some native or external resources. The only guarantee is that `ObjectPool` is not going to break if there are lost objects.
 
 ```kotlin
 val ExampleIntArrayPool = object : DefaultPool<IntArray>(ARRAY_POOL_SIZE) {

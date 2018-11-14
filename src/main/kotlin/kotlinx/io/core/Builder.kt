@@ -1,6 +1,7 @@
 package kotlinx.io.core
 
 import kotlinx.io.pool.*
+import kotlinx.io.core.internal.require
 
 expect val PACKET_MAX_COPY_SIZE: Int
 
@@ -20,7 +21,7 @@ inline fun buildPacket(headerSizeHint: Int = 0, block: BytePacketBuilder.() -> U
     }
 }
 
-expect fun BytePacketBuilder(headerSizeHint: Int): BytePacketBuilder
+expect fun BytePacketBuilder(headerSizeHint: Int = 0): BytePacketBuilder
 
 /**
  * A builder that provides ability to build byte packets with no knowledge of it's size.
@@ -39,104 +40,141 @@ expect fun BytePacketBuilder(headerSizeHint: Int): BytePacketBuilder
  * }
  * ```
  */
-class BytePacketBuilder(private var headerSizeHint: Int, private val pool: ObjectPool<BufferView>) : Appendable {
+class BytePacketBuilder(private var headerSizeHint: Int, pool: ObjectPool<IoBuffer>): BytePacketBuilderPlatformBase(pool) {
     init {
         require(headerSizeHint >= 0) { "shouldn't be negative: headerSizeHint = $headerSizeHint" }
     }
 
     /**
-     * Number of bytes currently buffered
+     * Number of bytes written to the builder
      */
-    var size: Int = 0
-        private set
-
-    /**
-     * Byte order (Endianness) to be used by future write functions calls on this builder instance. Doesn't affect any
-     * previously written values. Note that [reset] doesn't change this value back to the default byte order.
-     * @default [ByteOrder.BIG_ENDIAN]
-     */
-    var byteOrder: ByteOrder = ByteOrder.BIG_ENDIAN
-        set(value) {
-            field = value
-            tail.byteOrder = value
+    val size: Int get() {
+        val size = _size
+        if (size == -1) {
+            _size = head.remainingAll().toInt()
+            return _size
         }
-
-    private var head: BufferView = BufferView.Empty
-    private var tail: BufferView = head
-
-    fun writeFully(src: ByteArray) {
-        writeFully(src, 0, src.size)
+        return size
     }
 
-    fun writeFully(src: ByteArray, offset: Int, length: Int) {
-        var copied = 0
-
-        while (copied < length) {
-            write(1) { buffer ->
-                val size = minOf(buffer.writeRemaining, length - copied)
-                buffer.write(src, offset + copied, size)
-                copied += size
-                size
-            }
+    val isEmpty: Boolean get() {
+        val _size = _size
+        return when {
+            _size > 0 -> false
+            _size == 0 -> true
+            head.canRead() -> false
+            size == 0 -> true
+            else -> false
         }
     }
 
-    fun writeLong(l: Long) {
-        write(8) { it.writeLong(l); 8 }
+    val isNotEmpty: Boolean get() {
+        val _size = _size
+        return when {
+            _size > 0 -> true
+            _size == 0 -> false
+            head.canRead() -> true
+            size > 0 -> true
+            else -> false
+        }
     }
 
-    fun writeInt(i: Int) {
-        write(4) { it.writeInt(i); 4 }
-    }
+    @PublishedApi
+    internal var head: IoBuffer = IoBuffer.Empty
 
-    fun writeShort(s: Short) {
-        write(2) { it.writeShort(s); 2 }
-    }
-
-    fun writeByte(b: Byte) {
-        write(1) { it.writeByte(b); 1 }
-    }
-
-    fun writeDouble(d: Double) {
-        write(8) { it.writeDouble(d); 8 }
-    }
-
-    fun writeFloat(f: Float) {
-        write(4) { it.writeFloat(f); 4 }
-    }
-
-    /**
-     * Append single UTF-8 character
-     */
     override fun append(c: Char): BytePacketBuilder {
-        write(3) {
-            it.putUtf8Char(c.toInt() and 0xffff)
-        }
-        return this
+        return super.append(c) as BytePacketBuilder
     }
 
     override fun append(csq: CharSequence?): BytePacketBuilder {
-        if (csq == null) {
-            append("null")
-        } else {
-            append(csq, 0, csq.length)
-        }
-        return this
+        return super.append(csq) as BytePacketBuilder
     }
 
     override fun append(csq: CharSequence?, start: Int, end: Int): BytePacketBuilder {
-        if (csq == null) {
-            return append("null", start, end)
-        }
+        return super.append(csq, start, end) as BytePacketBuilder
+    }
 
-        appendASCII(csq, start, end)
-        return this
+    /**
+     * Release any resources that the builder holds. Builder shouldn't be used after release
+     */
+    override fun release() {
+        val head = this.head
+        val empty = IoBuffer.Empty
+
+        if (head !== empty) {
+            this.head = empty
+            this.tail = empty
+            head.releaseAll(pool)
+            _size = 0
+        }
+    }
+
+    override fun flush() {
+    }
+
+    override fun close() {
+        release()
+    }
+
+    /**
+     * Creates a temporary packet view of the packet being build without discarding any bytes from the builder.
+     * This is similar to `build().copy()` except that the builder keeps already written bytes untouched.
+     * A temporary view packet is passed as argument to [block] function and it shouldn't leak outside of this block
+     * otherwise an unexpected behaviour may occur.
+     */
+    fun <R> preview(block: (tmp: ByteReadPacket) -> R): R {
+        val head = head.copyAll()
+        val pool = if (head === IoBuffer.Empty) IoBuffer.EmptyPool else pool
+        val packet = ByteReadPacket(head, pool)
+
+        return try {
+            block(packet)
+        } finally {
+            packet.release()
+        }
+    }
+
+    /**
+     * Builds byte packet instance and resets builder's state to be able to build another one packet if needed
+     */
+    fun build(): ByteReadPacket {
+        val size = size
+        val head = stealAll()
+
+        return when (head) {
+            null -> ByteReadPacket.Empty
+            else -> ByteReadPacket(head, size.toLong(), pool)
+        }
+    }
+
+    /**
+     * Detach all chunks and cleanup all internal state so builder could be reusable again
+     * @return a chain of buffer views or `null` of it is empty
+     */
+    internal fun stealAll(): IoBuffer? {
+        val head = this.head
+        val empty = IoBuffer.Empty
+
+        this.head = empty
+        this.tail = empty
+        this._size = 0
+
+        return if (head === empty) null else head
+    }
+
+    internal fun afterBytesStolen() {
+        val head = head
+        check(head.next == null)
+        _size = 0
+        head.resetForWrite()
+        head.reserveStartGap(headerSizeHint)
+        head.reserveEndGap(ByteReadPacketBase.ReservedSize)
     }
 
     /**
      * Writes another packet to the end. Please note that the instance [p] gets consumed so you don't need to release it
      */
-    fun writePacket(p: ByteReadPacket) {
+    override fun writePacket(p: ByteReadPacket) {
         val foreignStolen = p.stealAll()
         if (foreignStolen == null) {
             p.release()
@@ -144,13 +182,17 @@ class BytePacketBuilder(private var headerSizeHint: Int, private val pool: Objec
         }
 
         val tail = tail
-        if (tail === BufferView.Empty) {
+        if (tail === IoBuffer.Empty) {
             head = foreignStolen
             this.tail = foreignStolen.findTail()
-            size = foreignStolen.remainingAll().toInt()
+            _size = foreignStolen.remainingAll().toInt()
             return
         }
 
+        writePacketSlow(tail, foreignStolen, p)
+    }
+
+    private fun writePacketSlow(tail: IoBuffer, foreignStolen: IoBuffer, p: ByteReadPacket) {
         val lastSize = tail.readRemaining
         val nextSize = foreignStolen.readRemaining
 
@@ -167,131 +209,387 @@ class BytePacketBuilder(private var headerSizeHint: Int, private val pool: Objec
             // simply enqueue
             tail.next = foreignStolen
             this.tail = foreignStolen.findTail()
-            size = head.remainingAll().toInt()
+            _size = head.remainingAll().toInt()
         } else if (prependSize == -1 || appendSize <= prependSize) {
             // do append
             tail.writeBufferAppend(foreignStolen, tail.writeRemaining + tail.endGap)
             tail.next = foreignStolen.next
             this.tail = foreignStolen.findTail().takeUnless { it === foreignStolen } ?: tail
             foreignStolen.release(p.pool)
-            size = head.remainingAll().toInt()
+            _size = head.remainingAll().toInt()
         } else if (appendSize == -1 || prependSize < appendSize) {
-            // do prepend
-            foreignStolen.writeBufferPrepend(tail)
-
-            if (head === tail) {
-                head = foreignStolen
-            } else {
-                var pre = head
-                while (true) {
-                    val next = pre.next!!
-                    if (next === tail) break
-                    pre = next
-                }
-
-                pre.next = foreignStolen
-            }
-            tail.release(pool)
-
-            this.tail = foreignStolen.findTail()
-            size = head.remainingAll().toInt()
+            writePacketSlowPrepend(foreignStolen, tail)
         } else {
             throw IllegalStateException("prep = $prependSize, app = $appendSize")
         }
     }
 
-    private tailrec fun appendASCII(csq: CharSequence, start: Int, end: Int) {
-        val bb = ensure()
-        val limitedEnd = minOf(end, start + bb.writeRemaining)
+    private fun writePacketSlowPrepend(foreignStolen: IoBuffer, tail: IoBuffer) {
+        // do prepend
+        foreignStolen.writeBufferPrepend(tail)
 
-        for (i in start until limitedEnd) {
-            val chi = csq[i].toInt() and 0xffff
-            if (chi >= 0x80) {
-                appendUTF8(csq, i, end, bb)
-                return
+        if (head === tail) {
+            head = foreignStolen
+        } else {
+            var pre = head
+            while (true) {
+                val next = pre.next!!
+                if (next === tail) break
+                pre = next
             }
 
-            bb.writeByte(chi.toByte())
-            size++
+            pre.next = foreignStolen
+        }
+        tail.release(pool)
+
+        this.tail = foreignStolen.findTail()
+        _size = head.remainingAll().toInt()
+    }
+
+    override fun last(buffer: IoBuffer) {
+        if (head === IoBuffer.Empty) {
+            if (buffer.isEmpty()) { // headerSize is just a hint so we shouldn't force to reserve space
+                buffer.reserveStartGap(headerSizeHint) // it will always fail for non-empty buffer
+            }
+            tail = buffer
+            head = buffer
+            _size = buffer.remainingAll().toInt()
+        } else {
+            tail.next = buffer
+            tail = buffer
+            _size = -1
+        }
+    }
+}
+
+expect abstract class BytePacketBuilderPlatformBase
+    internal constructor(pool: ObjectPool<IoBuffer>) : BytePacketBuilderBase
+
+/**
+ * This is the default [Output] implementation
+ */
+@ExperimentalIoApi
+abstract class AbstractOutput(pool: ObjectPool<IoBuffer> = IoBuffer.Pool) : BytePacketBuilderPlatformBase(pool) {
+    protected var currentTail: IoBuffer
+        get() = this.tail
+        set(newValue) {
+            this.tail = newValue
         }
 
-        if (limitedEnd < end) {
-            return appendASCII(csq, limitedEnd, end)
+    /**
+     * Invoked when a new [buffer] is appended for writing (usually it's empty)
+     */
+    abstract override fun last(buffer: IoBuffer)
+
+    open override fun release() {
+        if (currentTail != IoBuffer.Empty) {
+            currentTail.release(pool)
+            currentTail = IoBuffer.Empty
         }
     }
 
-    // expects at least one byte remaining in [bb]
-    private tailrec fun appendUTF8(csq: CharSequence, start: Int, end: Int, bb: BufferView) {
-        var rem = bb.writeRemaining
-        val limitedEnd = minOf(end, start + rem)
+    abstract override fun flush()
 
-        for (i in start until limitedEnd) {
-            val chi = csq[i].toInt() and 0xffff
-            val requiredSize = when {
-                chi <= 0x7f -> 1
-                chi > 0x7ff -> 3
-                else -> 2
+    /**
+     * Should flush and close the destination
+     */
+    open override fun close() {
+        flush()
+    }
+}
+
+abstract class BytePacketBuilderBase internal constructor(protected val pool: ObjectPool<IoBuffer>) : Appendable, Output {
+
+    /**
+     * Number of bytes currently buffered or -1 if not known (need to be recomputed)
+     */
+    protected var _size: Int = 0
+
+    /**
+     * Byte order (Endianness) to be used by future write functions calls on this builder instance. Doesn't affect any
+     * previously written values. Note that [reset] doesn't change this value back to the default byte order.
+     * @default [ByteOrder.BIG_ENDIAN]
+     */
+    final override var byteOrder: ByteOrder = ByteOrder.BIG_ENDIAN
+        set(value) {
+            field = value
+            val tail = tail
+            if (tail.canWrite()) {
+                // it is important to not set byte order for IoBuffer.Empty as it will crash on native
+                tail.byteOrder = value
             }
-
-            if (rem < requiredSize) {
-                return appendUTF8(csq, i, end, appendNewBuffer())
-            }
-
-            val chSize = bb.putUtf8Char(chi)
-            rem -= chSize
-            size += chSize
         }
 
-        if (limitedEnd < end) {
-            return appendUTF8(csq, limitedEnd, end, appendNewBuffer())
+    @PublishedApi
+    internal var tail: IoBuffer = IoBuffer.Empty
+
+    final override fun writeFully(src: ByteArray, offset: Int, length: Int) {
+        if (length == 0) return
+
+        var copied = 0
+
+        writeLoop(1, { copied < length }) { buffer, bufferRemaining ->
+            val size = minOf(bufferRemaining, length - copied)
+            buffer.writeFully(src, offset + copied, size)
+            copied += size
+            size
         }
     }
 
-    internal fun appendChars(ca: CharArray, start: Int, end: Int) {
-        return appendASCII(ca, start, end)
+    final override fun writeLong(v: Long) {
+        write(8) { it.writeLong(v); 8 }
     }
 
-    private tailrec fun appendASCII(csq: CharArray, start: Int, end: Int) {
-        val bb = ensure()
-        val limitedEnd = minOf(end, start + bb.writeRemaining)
+    final override fun writeInt(v: Int) {
+        write(4) { it.writeInt(v); 4 }
+    }
 
-        for (i in start until limitedEnd) {
-            val chi = csq[i].toInt() and 0xffff
-            if (chi >= 0x80) {
-                appendUTF8(csq, i, end, bb)
-                return
-            }
+    final override fun writeShort(v: Short) {
+        write(2) { it.writeShort(v); 2 }
+    }
 
-            bb.writeByte(chi.toByte())
-            size++
-        }
+    final override fun writeByte(v: Byte) {
+        write(1) { it.writeByte(v); 1 }
+    }
 
-        if (limitedEnd < end) {
-            return appendASCII(csq, limitedEnd, end)
+    final override fun writeDouble(v: Double) {
+        write(8) { it.writeDouble(v); 8 }
+    }
+
+    final override fun writeFloat(v: Float) {
+        write(4) { it.writeFloat(v); 4 }
+    }
+
+    override fun writeFully(src: ShortArray, offset: Int, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(offset + length < src.lastIndex) { "offset ($offset) + length ($length) >= src.lastIndex (${src.lastIndex})" }
+
+        if (length == 0) return
+
+        var start = offset
+        var remaining = length
+
+        writeLoop(2, { remaining > 0 }) { buffer, chunkRemaining ->
+            val qty = minOf(chunkRemaining shr 1, remaining)
+            buffer.writeFully(src, start, qty)
+            start += qty
+            remaining -= qty
+            qty * 2
         }
     }
 
-    // expects at least one byte remaining in [bb]
-    private tailrec fun appendUTF8(csq: CharArray, start: Int, end: Int, bb: BufferView) {
-        val limitedEnd = minOf(end, start + bb.writeRemaining)
-        for (i in start until limitedEnd) {
-            val chi = csq[i].toInt() and 0xffff
-            val requiredSize = when {
-                chi <= 0x7f -> 1
-                chi > 0x7ff -> 3
-                else -> 2
-            }
+    override fun writeFully(src: IntArray, offset: Int, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(offset + length < src.lastIndex) { "offset ($offset) + length ($length) >= src.lastIndex (${src.lastIndex})" }
 
-            if (bb.writeRemaining < requiredSize) {
-                return appendUTF8(csq, i, end, appendNewBuffer())
-            }
+        var start = offset
+        var remaining = length
 
-            size += bb.putUtf8Char(chi)
+        writeLoop(4, { remaining > 0 }) { buffer, chunkRemaining ->
+            val qty = minOf(chunkRemaining shr 2, remaining)
+            buffer.writeFully(src, start, qty)
+            start += qty
+            remaining -= qty
+            qty * 4
+        }
+    }
+
+    override fun writeFully(src: LongArray, offset: Int, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(offset + length < src.lastIndex) { "offset ($offset) + length ($length) >= src.lastIndex (${src.lastIndex})" }
+
+        var start = offset
+        var remaining = length
+
+        writeLoop(8, { remaining > 0 }) { buffer, chunkRemaining ->
+            val qty = minOf(chunkRemaining shr 3, remaining)
+            buffer.writeFully(src, start, qty)
+            start += qty
+            remaining -= qty
+            qty * 8
+        }
+    }
+
+    override fun writeFully(src: FloatArray, offset: Int, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(offset + length < src.lastIndex) { "offset ($offset) + length ($length) >= src.lastIndex (${src.lastIndex})" }
+
+        var start = offset
+        var remaining = length
+
+        writeLoop(4, { remaining > 0 }) { buffer, chunkRemaining ->
+            val qty = minOf(chunkRemaining shr 2, remaining)
+            buffer.writeFully(src, start, qty)
+            start += qty
+            remaining -= qty
+            qty * 4
+        }
+    }
+
+    override fun writeFully(src: DoubleArray, offset: Int, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(offset + length < src.lastIndex) { "offset ($offset) + length ($length) >= src.lastIndex (${src.lastIndex})" }
+
+        var start = offset
+        var remaining = length
+
+        writeLoop(8, { remaining > 0 }) { buffer, chunkRemaining ->
+            val qty = minOf(chunkRemaining shr 3, remaining)
+            buffer.writeFully(src, start, qty)
+            start += qty
+            remaining -= qty
+            qty * 8
+        }
+    }
+
+    override fun writeFully(src: IoBuffer, length: Int) {
+        require(length >= 0) { "length shouldn't be negative: $length" }
+        require(length <= src.readRemaining) { "Not enough bytes available in src buffer to read $length bytes" }
+
+        val totalSize = minOf(src.readRemaining, length)
+        if (totalSize == 0) return
+        var remaining = totalSize
+
+        var tail = tail
+        if (!tail.canWrite()) {
+            tail = appendNewBuffer()
         }
 
-        if (limitedEnd < end) {
-            return appendUTF8(csq, limitedEnd, end, appendNewBuffer())
+        do {
+            val size = minOf(tail.writeRemaining, remaining)
+            tail.writeFully(src, size)
+            remaining -= size
+
+            if (remaining == 0) break
+            tail = appendNewBuffer()
+        } while (true)
+
+        addSize(totalSize)
+    }
+
+    override fun fill(n: Long, v: Byte) {
+        require(n >= 0L) { "n shouldn't be negative: $n" }
+
+        var rem = n
+        writeLoop(1, { rem > 0L }) { buffer, chunkRemaining ->
+            val size = minOf(chunkRemaining.toLong(), n).toInt()
+            buffer.fill(size.toLong(), v)
+            rem -= size
+            size
         }
+    }
+
+    /**
+     * Append single UTF-8 character
+     */
+    override fun append(c: Char): BytePacketBuilderBase {
+        write(3) {
+            it.putUtf8Char(c.toInt())
+        }
+        return this
+    }
+
+    override fun append(csq: CharSequence?): BytePacketBuilderBase {
+        if (csq == null) {
+            appendChars("null", 0, 4)
+        } else {
+            appendChars(csq, 0, csq.length)
+        }
+        return this
+    }
+
+    override fun append(csq: CharSequence?, start: Int, end: Int): BytePacketBuilderBase {
+        if (csq == null) {
+            return append("null", start, end)
+        }
+
+        appendChars(csq, start, end)
+
+        return this
+    }
+
+    open fun writePacket(p: ByteReadPacket) {
+        while (true) {
+            val buffer = p.steal() ?: break
+            last(buffer)
+        }
+    }
+
+    /**
+     * Write exact [n] bytes from packet to the builder
+     */
+    fun writePacket(p: ByteReadPacket, n: Int) {
+        var remaining = n
+
+        while (remaining > 0) {
+            val headRemaining = p.headRemaining
+            if (headRemaining <= remaining) {
+                remaining -= headRemaining
+                last(p.steal() ?: throw EOFException("Unexpected end of packet"))
+            } else {
+                p.read { view ->
+                    writeFully(view, remaining)
+                }
+                break
+            }
+        }
+    }
+
+    /**
+     * Write exact [n] bytes from packet to the builder
+     */
+    fun writePacket(p: ByteReadPacket, n: Long) {
+        var remaining = n
+
+        while (remaining > 0L) {
+            val headRemaining = p.headRemaining.toLong()
+            if (headRemaining <= remaining) {
+                remaining -= headRemaining
+                last(p.steal() ?: throw EOFException("Unexpected end of packet"))
+            } else {
+                p.read { view ->
+                    writeFully(view, remaining.toInt())
+                }
+                break
+            }
+        }
+    }
+
+    override fun append(csq: CharArray, start: Int, end: Int): Appendable {
+        appendChars(csq, start, end)
+        return this
+    }
+
+    private fun appendChars(csq: CharSequence, start: Int, end: Int): Int {
+        var idx = start
+        if (idx >= end) return idx
+        val tail = tail
+        if (tail.canWrite()) {
+            idx = tail.appendChars(csq, idx, end)
+        }
+
+        while (idx < end) {
+            idx = appendNewBuffer().appendChars(csq, idx, end)
+        }
+
+        this._size = -1
+        return idx
+    }
+
+    private fun appendChars(csq: CharArray, start: Int, end: Int): Int {
+        var idx = start
+        if (idx >= end) return idx
+        val tail = tail
+        if (tail.canWrite()) {
+            idx = tail.appendChars(csq, idx, end)
+        }
+
+        while (idx < end) {
+            idx = appendNewBuffer().appendChars(csq, idx, end)
+        }
+
+        this._size = -1
+        return idx
     }
 
     fun writeStringUtf8(s: String) {
@@ -307,7 +605,7 @@ class BytePacketBuilder(private var headerSizeHint: Int, private val pool: Objec
 //    }
 
     @Suppress("NOTHING_TO_INLINE")
-    private inline fun BufferView.putUtf8Char(v: Int) = when {
+    private inline fun IoBuffer.putUtf8Char(v: Int) = when {
         v in 1..0x7f -> {
             writeByte(v.toByte())
             1
@@ -326,50 +624,17 @@ class BytePacketBuilder(private var headerSizeHint: Int, private val pool: Objec
     }
 
     /**
-     * Creates a temporary packet view of the packet being build without discarding any bytes from the builder.
-     * This is similar to `build().copy()` except that the builder keeps already written bytes untouched.
-     * A temporary view packet is passed as argument to [block] function and it shouldn't leak outside of this block
-     * otherwise an unexpected behaviour may occur.
-     */
-    fun <R> preview(block: (tmp: ByteReadPacket) -> R): R {
-        val head = head.copyAll()
-        val pool = if (head === BufferView.Empty) EmptyBufferViewPool else pool
-        val packet = ByteReadPacket(head, pool)
-
-        return try {
-            block(packet)
-        } finally {
-            packet.release()
-        }
-    }
-
-    /**
-     * Builds byte packet instance and resets builder's state to be able to build another one packet if needed
-     */
-    fun build(): ByteReadPacket {
-        val head = this.head
-
-        this.head = BufferView.Empty
-        this.tail = BufferView.Empty
-        this.size = 0
-
-        if (head === BufferView.Empty) return ByteReadPacket(head, EmptyBufferViewPool)
-        return ByteReadPacket(head, pool)
-    }
-
-    /**
      * Release any resources that the builder holds. Builder shouldn't be used after release
      */
-    fun release() {
-        val head = this.head
-        val empty = BufferView.Empty
+    abstract fun release()
 
-        if (head !== empty) {
-            this.head = empty
-            this.tail = empty
-            head.releaseAll(pool)
-            size = 0
-        }
+    override fun `$prepareWrite$`(n: Int): IoBuffer {
+        if (tail.writeRemaining >= n) return tail
+        return appendNewBuffer()
+    }
+
+    override fun `$afterWrite$`() {
+        _size = -1
     }
 
     /**
@@ -379,39 +644,60 @@ class BytePacketBuilder(private var headerSizeHint: Int, private val pool: Objec
         release()
     }
 
-    internal inline fun write(size: Int, block: (BufferView) -> Int) {
-        val buffer = last()?.takeIf { it.writeRemaining >= size }
+    @PublishedApi
+    internal inline fun write(size: Int, block: (IoBuffer) -> Int) {
+        var buffer = tail
+        if (buffer.writeRemaining < size) {
+            buffer = appendNewBuffer()
+        }
 
-        this.size += if (buffer == null) {
-            block(appendNewBuffer())
-        } else {
-            block(buffer)
+        addSize(block(buffer))
+    }
+
+    private inline fun writeLoop(size: Int, predicate: () -> Boolean, block: (IoBuffer, Int) -> Int) {
+        if (!predicate()) return
+        var written = 0
+        var buffer = tail
+        var rem = buffer.writeRemaining
+
+        do {
+            if (rem < size) {
+                buffer = appendNewBuffer()
+                rem = buffer.writeRemaining
+            }
+
+            val result = block(buffer, rem)
+            written += result
+            rem -= result
+        } while (predicate())
+
+        addSize(written)
+    }
+
+    @PublishedApi
+    internal fun addSize(n: Int) {
+        val size = _size
+        if (size != -1) {
+            _size = size + n
         }
     }
 
-    private fun ensure(): BufferView = last()?.takeIf { it.writeRemaining > 0 } ?: appendNewBuffer()
+    internal abstract fun last(buffer: IoBuffer)
 
-    private fun appendNewBuffer(): BufferView {
+    @PublishedApi
+    internal fun appendNewBuffer(): IoBuffer {
         val new = pool.borrow()
-        if (head === BufferView.Empty) {
-            new.reserveStartGap(headerSizeHint)
-        }
         new.reserveEndGap(ByteReadPacket.ReservedSize)
         new.byteOrder = byteOrder
+
         last(new)
+
         return new
     }
-
-    private fun last(): BufferView? = tail.takeIf { it !== BufferView.Empty }
-
-    private fun last(new: BufferView) {
-        if (head === BufferView.Empty) {
-            tail = new
-            head = new
-        } else {
-            tail.next = new
-            tail = new
-        }
-    }
 }
+
+private inline fun <T> T.takeUnless(predicate: (T) -> Boolean): T? {
+    return if (!predicate(this)) this else null
+}
+
 

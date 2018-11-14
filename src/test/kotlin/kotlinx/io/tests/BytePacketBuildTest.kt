@@ -5,7 +5,7 @@ import kotlin.test.Test
 import kotlin.test.*
 
 open class BytePacketBuildTest {
-    open val pool: VerifyingObjectPool<BufferView> = VerifyingObjectPool(BufferView.NoPool)
+    open val pool: VerifyingObjectPool<IoBuffer> = VerifyingObjectPool(IoBuffer.NoPool)
 
     @AfterTest
     fun verifyPool() {
@@ -32,7 +32,7 @@ open class BytePacketBuildTest {
             listOf(1, 2, 3).joinTo(this, separator = "|")
         }
 
-//        assertEquals(2 + 1 + 2 + 4 + 8 + 4 + 8 + 3 + 5, p.remaining)
+        assertEquals(2 + 1 + 2 + 4 + 8 + 4 + 8 + 8 + 3 + 5, p.remaining)
         val ba = ByteArray(2)
         p.readFully(ba)
 
@@ -82,6 +82,7 @@ open class BytePacketBuildTest {
 
         assertEquals("OK", p.readUTF8Line())
         assertEquals("1|2|3", p.readUTF8Line())
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -91,6 +92,7 @@ open class BytePacketBuildTest {
         }
 
         assertEquals(9999, p.discard(10000))
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -101,6 +103,7 @@ open class BytePacketBuildTest {
 
         assertEquals(3, p.discard(3))
         assertEquals("123", p.readUTF8Line())
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -111,6 +114,7 @@ open class BytePacketBuildTest {
 
         p.discardExact(3)
         assertEquals("123", p.readUTF8Line())
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -122,6 +126,7 @@ open class BytePacketBuildTest {
         assertFailsWith<EOFException> {
             p.discardExact(1000)
         }
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -131,6 +136,7 @@ open class BytePacketBuildTest {
         }
 
         assertEquals(99999, p.discard(1000000))
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -142,6 +148,7 @@ open class BytePacketBuildTest {
 
         assertEquals(99999 + 3, p.discard(99999 + 3))
         assertEquals("123", p.readUTF8Line())
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -152,9 +159,10 @@ open class BytePacketBuildTest {
             }
         }
 
-        assertEquals(PACKET_BUFFER_SIZE + 3, p.remaining)
+        assertEquals(PACKET_BUFFER_SIZE + 3, p.remaining.toInt())
         p.readFully(ByteArray(PACKET_BUFFER_SIZE - 1))
         assertEquals(0x01010101, p.readInt())
+        assertTrue { p.isEmpty }
     }
 
     @Test
@@ -189,6 +197,26 @@ open class BytePacketBuildTest {
         }
 
         assertEquals(777, p.readInt())
+    }
+
+    @Test
+    fun testReadByteEmptyPacket() {
+        assertFailsWith<EOFException> {
+            ByteReadPacket.Empty.readByte()
+        }
+
+        assertFailsWith<EOFException> {
+            val p = buildPacket {
+                writeInt(1)
+            }
+
+            try {
+                p.readInt()
+                p.readByte()
+            } finally {
+                p.release()
+            }
+        }
     }
 
     private inline fun buildPacket(block: BytePacketBuilder.() -> Unit): ByteReadPacket {

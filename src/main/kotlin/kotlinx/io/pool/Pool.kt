@@ -1,6 +1,10 @@
 package kotlinx.io.pool
 
-interface ObjectPool<T : Any> {
+import kotlinx.atomicfu.*
+import kotlinx.io.core.*
+import kotlin.jvm.*
+
+interface ObjectPool<T : Any> : Closeable {
     /**
      * Pool capacity
      */
@@ -21,6 +25,11 @@ interface ObjectPool<T : Any> {
      * otherwise it can result in undefined behaviour
      */
     fun dispose()
+
+    /**
+     * Does pool dispose
+     */
+    override fun close() = dispose()
 }
 
 /**
@@ -34,6 +43,68 @@ abstract class NoPoolImpl<T : Any> : ObjectPool<T> {
     }
 
     override fun dispose() {
+    }
+}
+
+/**
+ * A pool that produces at most one instance
+ */
+abstract class SingleInstancePool<T : Any> : ObjectPool<T> {
+    private val borrowed = atomic(0)
+    private val disposed = atomic(false)
+
+    @Volatile
+    private var instance: T? = null
+
+    /**
+     * Creates a new instance of [T]
+     */
+    protected abstract fun produceInstance(): T
+
+    /**
+     * Dispose [instance] and release it's resources
+     */
+    protected abstract fun disposeInstance(instance: T)
+
+    final override val capacity: Int get() = 1
+
+    final override fun borrow(): T {
+        borrowed.update {
+            if (it != 0) throw IllegalStateException("Instance is already consumed")
+            1
+        }
+
+        val instance = produceInstance()
+        this.instance = instance
+
+        return instance
+    }
+
+    final override fun recycle(instance: T) {
+        if (this.instance !== instance) {
+            if (this.instance == null && borrowed.value != 0) {
+                throw IllegalStateException("Already recycled or an irrelevant instance tried to be recycled")
+            }
+
+            throw IllegalStateException("Unable to recycle irrelevant instance")
+        }
+
+        this.instance = null
+
+        if (!disposed.compareAndSet(false, true)) {
+            throw IllegalStateException("An instance is already disposed")
+        }
+
+        disposeInstance(instance)
+    }
+
+    final override fun dispose() {
+        if (disposed.compareAndSet(false, true)) {
+            val instance = this.instance ?: return
+            this.instance = null
+
+            disposeInstance(instance)
+        }
     }
 }
 
@@ -63,3 +134,24 @@ expect abstract class DefaultPool<T : Any> : ObjectPool<T> {
      */
     protected open fun validateInstance(instance: T)
 }
+
+/**
+ * Borrows and instance of [T] from the pool, invokes [block] with it and finally recycles it
+ */
+@Deprecated("Use useInstance instead", ReplaceWith("useInstance(block)"))
+inline fun <T : Any, R> ObjectPool<T>.useBorrowed(block: (T) -> R): R {
+    return useInstance(block)
+}
+
+/**
+ * Borrows and instance of [T] from the pool, invokes [block] with it and finally recycles it
+ */
+inline fun <T : Any, R> ObjectPool<T>.useInstance(block: (T) -> R): R {
+    val instance = borrow()
+    try {
+        return block(instance)
+    } finally {
+        recycle(instance)
+    }
+}
+
